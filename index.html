@@ -1417,6 +1417,42 @@
     };
   }
 
+  // Some real-world exports have a title/banner row (e.g. a merged "SOR JAN - DEC 2026"
+  // cell) sitting above the actual column headers. Scan the first few rows and pick
+  // whichever one has the most cells matching a known header alias, rather than
+  // blindly assuming row 1 is the header row.
+  function findHeaderRowIndex(rows2D){
+    const ALL_ALIASES = Object.values(HEADER_ALIASES).flat();
+    let bestIdx = 0, bestScore = -1;
+    const scanLimit = Math.min(rows2D.length, 6);
+    for(let i=0;i<scanLimit;i++){
+      const row = rows2D[i] || [];
+      let score = 0;
+      row.forEach(cell=>{
+        if(cell === undefined || cell === null || cell === '') return;
+        if(ALL_ALIASES.includes(normalizeHeader(cell))) score++;
+      });
+      if(score > bestScore){ bestScore = score; bestIdx = i; }
+    }
+    return bestScore >= 2 ? bestIdx : 0;
+  }
+
+  function rowObjectsFromSheet(sheet){
+    const rows2D = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+    const headerIdx = findHeaderRowIndex(rows2D);
+    const headers = rows2D[headerIdx] || [];
+    return rows2D.slice(headerIdx + 1)
+      .map(r => {
+        const obj = {};
+        headers.forEach((h, i) => {
+          if(h === undefined || h === null || h === '') return;
+          obj[h] = r[i] !== undefined ? r[i] : '';
+        });
+        return obj;
+      })
+      .filter(obj => Object.values(obj).some(v => String(v).trim() !== ''));
+  }
+
   const importStatus = document.getElementById('importStatus');
   document.getElementById('importFile').addEventListener('change', function(e){
     const file = e.target.files[0];
@@ -1428,7 +1464,7 @@
         const workbook = XLSX.read(data, { type: 'array', cellDates: true });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        const rows = rowObjectsFromSheet(sheet);
 
         let added = 0, skipped = 0;
         rows.forEach(row=>{
