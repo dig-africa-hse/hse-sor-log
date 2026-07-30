@@ -1286,6 +1286,37 @@
   }
   function pad2(n){ return String(n).padStart(2,'0'); }
 
+  // ---------- category cleanup (fix typos/variants like "Enviroment" -> "Environment") ----------
+  const CANONICAL_CATEGORIES = ['PPE','Environment','Fire','Vehicle','Electrical','Equipment','Community','Contractor'];
+  function levenshtein(a, b){
+    const m = a.length, n = b.length;
+    const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
+    for(let i=0;i<=m;i++) dp[i][0] = i;
+    for(let j=0;j<=n;j++) dp[0][j] = j;
+    for(let i=1;i<=m;i++){
+      for(let j=1;j<=n;j++){
+        if(a[i-1] === b[j-1]) dp[i][j] = dp[i-1][j-1];
+        else dp[i][j] = 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+      }
+    }
+    return dp[m][n];
+  }
+  function normalizeCategoryToken(token){
+    const t = String(token || '').trim();
+    if(!t) return '';
+    const lower = t.toLowerCase();
+    const exact = CANONICAL_CATEGORIES.find(c => c.toLowerCase() === lower);
+    if(exact) return exact;
+    let best = null, bestDist = Infinity;
+    CANONICAL_CATEGORIES.forEach(c=>{
+      const d = levenshtein(lower, c.toLowerCase());
+      if(d < bestDist){ bestDist = d; best = c; }
+    });
+    // stricter tolerance for short canonical words to avoid false-positive matches
+    const threshold = best.length <= 4 ? 1 : Math.max(2, Math.floor(best.length * 0.3));
+    return bestDist <= threshold ? best : t; // keep original text if nothing close enough (might be a genuinely new category)
+  }
+
   function excelSerialToDateStr(serial){
     const utcMs = Math.round((serial - 25569) * 86400 * 1000);
     const d = new Date(utcMs);
@@ -1364,7 +1395,12 @@
 
     const catRaw = get('categories');
     const categories = catRaw
-      ? String(catRaw).split(/[,/&]|\band\b/i).map(s=>s.trim()).filter(Boolean)
+      ? Array.from(new Set(
+          String(catRaw).split(/[,/&]|\band\b/i)
+            .map(s=>s.trim())
+            .filter(Boolean)
+            .map(normalizeCategoryToken)
+        ))
       : [];
 
     let typePN = matchTypeValue(get('typePN'), ['Positive','Negative']);
