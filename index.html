@@ -1203,7 +1203,9 @@
   function normalizeCategory(raw){ return normalizeCategoryToken(raw); }
 
   function normalizeObserverKey(raw){
-    return (raw||'').toLowerCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim();
+    var key = (raw||'').toLowerCase().replace(/[.,]/g,'').replace(/\s+/g,' ').trim();
+    if(key.indexOf('minkail')!==-1 || key.indexOf('minilu')!==-1) return 'minkailu';
+    return key;
   }
   function titleCaseName(raw){
     return (raw||'').trim().replace(/\s+/g,' ').split(' ').map(w=>{
@@ -1221,7 +1223,9 @@
       groups[key][raw] = (groups[key][raw]||0)+1;
     });
     const map = {};
+    const MANUAL_DISPLAY_OVERRIDES = { 'minkailu': 'Minkailu' };
     Object.entries(groups).forEach(([key,variants])=>{
+      if(MANUAL_DISPLAY_OVERRIDES[key]){ map[key] = MANUAL_DISPLAY_OVERRIDES[key]; return; }
       const bestVariant = Object.entries(variants).sort((a,b)=>b[1]-a[1])[0][0];
       map[key] = titleCaseName(bestVariant);
     });
