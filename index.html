@@ -704,6 +704,19 @@
     </div>
 
     <div class="card">
+      <h2>Uploaded Files</h2>
+      <p style="margin-top:-6px;color:var(--muted);font-size:0.88rem;">Every spreadsheet you upload is recorded here so you can re-download and open the original file to verify exactly what was imported.</p>
+      <table>
+        <thead>
+          <tr><th>Date Uploaded</th><th>File Name</th><th>Size</th><th>Rows Imported</th><th></th></tr>
+        </thead>
+        <tbody id="uploadsBody">
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;">No files uploaded yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2>Data Cleanup</h2>
       <p style="margin-top:-6px;color:var(--muted);font-size:0.88rem;">Find duplicate entries and inconsistent observer names / category spellings (e.g. "Environemnt" vs "Environment", "John G Sesay" vs "John G. SESAY"). Nothing is changed until you click Apply.</p>
       <div class="actions" style="margin-top:0;">
@@ -812,7 +825,9 @@
 <script>
 (function(){
   const STORAGE_KEY = 'sor_entries_v1';
+  const UPLOADS_KEY = 'sor_uploads_v1';
   let entries = [];
+  let uploads = [];
   let editId = null;
   let typeChartInst=null, catChartInst=null, trendChartInst=null, correctedChartInst=null, topCatChartInst=null;
   const widgetPeriod = { type:'all', category:'all', observers:'all' };
@@ -824,6 +839,64 @@
   }
   function persist(){
     localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+  }
+
+  function loadUploads(){
+    try{
+      uploads = JSON.parse(localStorage.getItem(UPLOADS_KEY)) || [];
+    }catch(e){ uploads = []; }
+  }
+  function persistUploads(){
+    while(true){
+      try{
+        localStorage.setItem(UPLOADS_KEY, JSON.stringify(uploads));
+        return;
+      }catch(err){
+        const idx = uploads.findIndex(u=>u.dataUrl);
+        if(idx===-1) return;
+        uploads[idx].dataUrl = null;
+      }
+    }
+  }
+  function arrayBufferToBase64(buffer){
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunkSize = 0x8000;
+    for(let i=0;i<bytes.length;i+=chunkSize){
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunkSize));
+    }
+    return btoa(binary);
+  }
+  function guessMimeType(filename){
+    const ext = (filename.split('.').pop()||'').toLowerCase();
+    if(ext==='csv') return 'text/csv';
+    if(ext==='ods') return 'application/vnd.oasis.opendocument.spreadsheet';
+    if(ext==='xls') return 'application/vnd.ms-excel';
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  }
+  function formatFileSize(bytes){
+    if(bytes==null) return '';
+    if(bytes < 1024) return bytes + ' B';
+    if(bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
+    return (bytes/1024/1024).toFixed(2) + ' MB';
+  }
+  function renderUploads(){
+    const body = document.getElementById('uploadsBody');
+    if(!body) return;
+    const list = uploads.slice().sort((a,b)=> new Date(b.uploadedAt) - new Date(a.uploadedAt));
+    if(!list.length){
+      body.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center;">No files uploaded yet.</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(u=>{
+      const dt = new Date(u.uploadedAt);
+      const dateStr = dt.toLocaleString(undefined,{ year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      const sizeStr = formatFileSize(u.size);
+      const downloadBtn = u.dataUrl
+        ? '<a class="btn btn-secondary" style="display:inline-block;text-decoration:none;padding:6px 12px;font-size:0.82rem;" href="' + u.dataUrl + '" download="' + escapeHtml(u.name) + '">Download</a>'
+        : '<span style="color:var(--muted);font-size:0.82rem;">Unavailable (storage limit)</span>';
+      return '<tr><td>' + dateStr + '</td><td>' + escapeHtml(u.name) + '</td><td>' + sizeStr + '</td><td>' + u.rowsImported + (u.rowsSkipped ? ' (+' + u.rowsSkipped + ' skipped)' : '') + '</td><td>' + downloadBtn + '</td></tr>';
+    }).join('');
   }
 
   // ---------- date / week / month / quarter helpers ----------
@@ -1829,6 +1902,22 @@
         populatePeriodSelect();
         renderLog();
         renderDashboard();
+        let dataUrl = null;
+        try{
+          dataUrl = 'data:' + guessMimeType(file.name) + ';base64,' + arrayBufferToBase64(data.buffer);
+        }catch(convErr){ dataUrl = null; }
+        uploads.push({
+          id: Date.now() + '_' + Math.random().toString(36).slice(2,8),
+          name: file.name,
+          uploadedAt: new Date().toISOString(),
+          size: file.size,
+          rowsImported: added,
+          rowsSkipped: skipped,
+          dataUrl: dataUrl
+        });
+        persistUploads();
+        renderUploads();
+
         importStatus.textContent = `Imported ${added} entr${added===1?'y':'ies'}${skipped ? `, skipped ${skipped} row(s) without a valid date` : ''}.`;
       }catch(err){
         importStatus.textContent = 'Could not read that file. Make sure it is a valid .xlsx, .xls, .ods, or .csv file.';
@@ -1934,10 +2023,12 @@
   // ---------- init ----------
   document.getElementById('todayLabel').textContent = new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'});
   load();
+  loadUploads();
   resetForm();
   populatePeriodSelect();
   renderLog();
   renderDashboard();
+  renderUploads();
 })();
 </script>
 
