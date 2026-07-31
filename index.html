@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DIG Africa HSE Reporting System — SOR Log</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root{
     --navy:#123456;
@@ -470,6 +471,18 @@
     td::before{content:attr(data-label); font-weight:700; color:var(--muted); margin-right:8px;}
     .bar-row{grid-template-columns:90px 1fr 30px;}
   }
+
+.app-body{display:flex;align-items:flex-start;max-width:1300px;margin:0 auto;}
+.sidebar{width:210px;flex-shrink:0;background:var(--navy-dark);min-height:calc(100vh - 86px);padding:22px 12px;display:flex;flex-direction:column;gap:8px;position:sticky;top:0;}
+.sidebar .tab-btn{width:100%;text-align:left;background:rgba(255,255,255,0.08);}
+.sidebar .tab-btn.active{background:#fff;color:var(--navy);}
+.app-body > main{flex:1;max-width:1080px;margin:20px auto;padding:0 16px 60px;}
+.chart-card canvas{max-width:100%;}
+.analysis-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;}
+@media (max-width:760px){
+  .app-body{display:block;}
+  .sidebar{width:100%;flex-direction:row;flex-wrap:wrap;position:static;min-height:auto;}
+}
 </style>
 </head>
 <body>
@@ -482,13 +495,15 @@
       <p>Health, Safety &amp; Environment Department (HSE Dept.) · SOR Log module · <span id="todayLabel"></span></p>
     </div>
   </div>
-  <div class="tabs">
-    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
-    <button class="tab-btn" data-tab="entry">New Entry</button>
-    <button class="tab-btn" data-tab="log">SOR Log</button>
-  </div>
-</header>
+  </header>
 
+<div class="app-body">
+  <nav class="sidebar">
+    <button class="tab-btn active" data-tab="dashboard">📊 Dashboard</button>
+    <button class="tab-btn" data-tab="entry">➕ New Entry</button>
+    <button class="tab-btn" data-tab="log">📋 SOR Log</button>
+    <button class="tab-btn" data-tab="analysis">📈 Analysis</button>
+  </nav>
 <main>
 
   <!-- ==================== DASHBOARD TAB ==================== -->
@@ -511,10 +526,12 @@
       <div class="card">
         <h3>By Observation Type</h3>
         <div id="typeBars"></div>
+        <canvas id="typeChart" height="180" style="margin-top:12px;"></canvas>
       </div>
       <div class="card">
         <h3>By Category</h3>
         <div id="catBars"></div>
+        <canvas id="catChart" height="180" style="margin-top:12px;"></canvas>
       </div>
     </div>
 
@@ -695,7 +712,44 @@
     </div>
   </section>
 
+
+<section id="tab-analysis" class="hidden">
+  <div class="card">
+    <h2>Analysis</h2>
+    <p style="color:var(--muted);font-size:0.9rem;margin-top:-8px;">Deeper breakdown of SOR trends and performance.</p>
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-num" id="anaTotal">0</div><div class="kpi-label">Total Entries</div></div>
+      <div class="kpi"><div class="kpi-num" id="anaPositivePct">0%</div><div class="kpi-label">Positive Rate</div></div>
+      <div class="kpi"><div class="kpi-num" id="anaCorrectedPct">0%</div><div class="kpi-label">Corrected</div></div>
+      <div class="kpi"><div class="kpi-num" id="anaTopCategory">—</div><div class="kpi-label">Top Category</div></div>
+    </div>
+  </div>
+
+  <div class="analysis-grid">
+    <div class="card chart-card">
+      <h3>Monthly Trend (last 6 months)</h3>
+      <canvas id="trendChart" height="220"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3>Corrective Action Status</h3>
+      <canvas id="correctedChart" height="220"></canvas>
+    </div>
+    <div class="card chart-card">
+      <h3>Top 5 Categories</h3>
+      <canvas id="topCatChart" height="220"></canvas>
+    </div>
+    <div class="card">
+      <h3>Top Observers</h3>
+      <table>
+        <thead><tr><th>Observer</th><th>Entries</th></tr></thead>
+        <tbody id="topObserversBody"></tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
 </main>
+</div>
 
 <!-- ==================== DETAIL MODAL ==================== -->
 <div class="modal-backdrop hidden" id="modalBackdrop">
@@ -717,6 +771,7 @@
   const STORAGE_KEY = 'sor_entries_v1';
   let entries = [];
   let editId = null;
+  let typeChartInst=null, catChartInst=null, trendChartInst=null, correctedChartInst=null, topCatChartInst=null;
 
   function load(){
     try{
@@ -811,8 +866,10 @@
     document.getElementById('tab-dashboard').classList.toggle('hidden', name !== 'dashboard');
     document.getElementById('tab-entry').classList.toggle('hidden', name !== 'entry');
     document.getElementById('tab-log').classList.toggle('hidden', name !== 'log');
+    document.getElementById('tab-analysis').classList.toggle('hidden', name !== 'analysis');
     if(name === 'log') renderLog();
     if(name === 'dashboard') renderDashboard();
+    if(name === 'analysis') renderAnalysis();
   }
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.addEventListener('click', ()=> showTab(btn.dataset.tab));
@@ -1185,7 +1242,102 @@
         </td>
       </tr>
     `).join('');
+    // charts
+    const typeChartEl = document.getElementById('typeChart');
+    if(typeChartEl && window.Chart){
+      if(typeChartInst) typeChartInst.destroy();
+      typeChartInst = new Chart(typeChartEl, {
+        type:'doughnut',
+        data:{ labels: typeCounts.map(t=>t.label), datasets:[{ data: typeCounts.map(t=>t.count), backgroundColor:['#16a34a','#dc2626','#e11d48','#991b1b'] }] },
+        options:{ plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } } }
+      });
+    }
+    const catChartEl = document.getElementById('catChart');
+    if(catChartEl && window.Chart){
+      if(catChartInst) catChartInst.destroy();
+      const topCatsForChart = catEntries.slice(0,8);
+      catChartInst = new Chart(catChartEl, {
+        type:'bar',
+        data:{ labels: topCatsForChart.map(c=>c[0]), datasets:[{ label:'Entries', data: topCatsForChart.map(c=>c[1]), backgroundColor:'#123456' }] },
+        options:{ indexAxis:'y', plugins:{ legend:{ display:false } }, scales:{ x:{ beginAtZero:true } } }
+      });
+    }
     wireRowActions(recentBody);
+  }
+
+  function renderAnalysis(){
+    const total = entries.length;
+    const anaTotalEl = document.getElementById('anaTotal');
+    if(anaTotalEl) anaTotalEl.textContent = total;
+
+    const positiveCount = entries.filter(e=>e.typePN==='Positive').length;
+    const negativeCount = entries.filter(e=>e.typePN==='Negative').length;
+    const pnTotal = positiveCount + negativeCount;
+    const posPctEl = document.getElementById('anaPositivePct');
+    if(posPctEl) posPctEl.textContent = pnTotal ? Math.round(positiveCount/pnTotal*100)+'%' : '—';
+
+    const correctedCount = entries.filter(e=> e.corrected==='Yes' || e.correctedDate).length;
+    const corrPctEl = document.getElementById('anaCorrectedPct');
+    if(corrPctEl) corrPctEl.textContent = total ? Math.round(correctedCount/total*100)+'%' : '—';
+
+    const catCountsA = {};
+    entries.forEach(e=> (e.categories||[]).forEach(c=>{ catCountsA[c]=(catCountsA[c]||0)+1; }));
+    const catEntriesA = Object.entries(catCountsA).sort((a,b)=>b[1]-a[1]);
+    const topCatEl2 = document.getElementById('anaTopCategory');
+    if(topCatEl2) topCatEl2.textContent = catEntriesA.length ? catEntriesA[0][0] : '—';
+
+    // monthly trend, last 6 months
+    const months = [];
+    const now = new Date();
+    for(let i=5;i>=0;i--){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      months.push({ key: d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'), label: d.toLocaleDateString(undefined,{month:'short', year:'2-digit'}) });
+    }
+    const trendCounts = months.map(m => entries.filter(e => (e.date||'').slice(0,7) === m.key).length);
+    const trendEl = document.getElementById('trendChart');
+    if(trendEl && window.Chart){
+      if(trendChartInst) trendChartInst.destroy();
+      trendChartInst = new Chart(trendEl, {
+        type:'line',
+        data:{ labels: months.map(m=>m.label), datasets:[{ label:'Entries', data: trendCounts, borderColor:'#123456', backgroundColor:'rgba(18,52,86,0.15)', fill:true, tension:0.3 }] },
+        options:{ plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+      });
+    }
+
+    // corrected status
+    const yesCount = entries.filter(e=>e.corrected==='Yes').length;
+    const noCount = entries.filter(e=>e.corrected==='No' || !e.corrected).length;
+    const progressCount = entries.filter(e=>e.corrected==='In Progress').length;
+    const correctedEl = document.getElementById('correctedChart');
+    if(correctedEl && window.Chart){
+      if(correctedChartInst) correctedChartInst.destroy();
+      correctedChartInst = new Chart(correctedEl, {
+        type:'doughnut',
+        data:{ labels:['Corrected','Not Corrected','In Progress'], datasets:[{ data:[yesCount,noCount,progressCount], backgroundColor:['#16a34a','#dc2626','#b45309'] }] },
+        options:{ plugins:{ legend:{ position:'bottom', labels:{ boxWidth:12, font:{size:11} } } } }
+      });
+    }
+
+    // top categories
+    const topCatChartEl = document.getElementById('topCatChart');
+    if(topCatChartEl && window.Chart){
+      if(topCatChartInst) topCatChartInst.destroy();
+      const top5 = catEntriesA.slice(0,5);
+      topCatChartInst = new Chart(topCatChartEl, {
+        type:'bar',
+        data:{ labels: top5.map(c=>c[0]), datasets:[{ label:'Entries', data: top5.map(c=>c[1]), backgroundColor:'#c0392b' }] },
+        options:{ plugins:{ legend:{ display:false } }, scales:{ y:{ beginAtZero:true } } }
+      });
+    }
+
+    // top observers
+    const obsCounts = {};
+    entries.forEach(e=>{ const name=(e.observer||'Unknown').trim() || 'Unknown'; obsCounts[name]=(obsCounts[name]||0)+1; });
+    const topObs = Object.entries(obsCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+    const tbody = document.getElementById('topObserversBody');
+    if(tbody){
+      tbody.innerHTML = topObs.length ? topObs.map(([name,count])=>`<tr><td>${escapeHtml(name)}</td><td>${count}</td></tr>`).join('') : '<tr><td colspan="2">No data yet.</td></tr>';
+    }
   }
 
   // ---------- export (matches the department's original spreadsheet format) ----------
