@@ -529,6 +529,24 @@
       </div>
     </div>
 
+    <div class="card" id="calendarClockCard">
+      <h3>Calendar &amp; Clock</h3>
+      <div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start;">
+        <div style="text-align:center;min-width:140px;">
+          <div id="liveClock" style="font-size:1.9rem;font-weight:700;color:var(--navy);"></div>
+          <div id="liveDateLabel" style="font-size:0.85rem;color:var(--muted);margin-top:4px;"></div>
+        </div>
+        <div style="flex:1;min-width:240px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <button type="button" id="calPrevBtn" class="btn btn-secondary" style="padding:2px 10px;">&lsaquo;</button>
+            <strong id="calMonthLabel" style="font-size:0.92rem;"></strong>
+            <button type="button" id="calNextBtn" class="btn btn-secondary" style="padding:2px 10px;">&rsaquo;</button>
+          </div>
+          <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;font-size:0.76rem;text-align:center;color:var(--text);"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="card">
       <h3>This Week — <span id="weekRangeLabel"></span></h3>
       <div class="week-snapshot-kpis">
@@ -895,7 +913,8 @@
       const downloadBtn = u.dataUrl
         ? '<a class="btn btn-secondary" style="display:inline-block;text-decoration:none;padding:6px 12px;font-size:0.82rem;" href="' + u.dataUrl + '" download="' + escapeHtml(u.name) + '">Download</a>'
         : '<span style="color:var(--muted);font-size:0.82rem;">Unavailable (storage limit)</span>';
-      return '<tr><td>' + dateStr + '</td><td>' + escapeHtml(u.name) + '</td><td>' + sizeStr + '</td><td>' + u.rowsImported + (u.rowsSkipped ? ' (+' + u.rowsSkipped + ' skipped)' : '') + '</td><td>' + downloadBtn + '</td></tr>';
+      const deleteBtn = '<button type="button" class="btn btn-secondary delete-upload-btn" data-upload-id="' + escapeHtml(u.id) + '" style="margin-left:6px;padding:6px 12px;font-size:0.82rem;">Delete</button>';
+      return '<tr><td>' + dateStr + '</td><td>' + escapeHtml(u.name) + '</td><td>' + sizeStr + '</td><td>' + u.rowsImported + (u.rowsSkipped ? ' (+' + u.rowsSkipped + ' skipped)' : '') + '</td><td>' + downloadBtn + deleteBtn + '</td></tr>';
     }).join('');
   }
 
@@ -1818,6 +1837,7 @@
 
     return {
       id: Date.now() + '-' + Math.random().toString(36).slice(2,7),
+      uploadId: null,
       reportNo: String(get('reportNo') || '').trim(),
       date: dateStr,
       time: parseTimeFlexible(get('time')),
@@ -1887,10 +1907,12 @@
         const sheet = workbook.Sheets[sheetName];
         const rows = rowObjectsFromSheet(sheet);
 
+        const uploadId = Date.now() + '_' + Math.random().toString(36).slice(2,8);
         let added = 0, skipped = 0;
         rows.forEach(row=>{
           const entry = rowToEntry(row);
           if(entry){
+            entry.uploadId = uploadId;
             entries.push(entry);
             added++;
           } else {
@@ -1907,7 +1929,7 @@
           dataUrl = 'data:' + guessMimeType(file.name) + ';base64,' + arrayBufferToBase64(data.buffer);
         }catch(convErr){ dataUrl = null; }
         uploads.push({
-          id: Date.now() + '_' + Math.random().toString(36).slice(2,8),
+          id: uploadId,
           name: file.name,
           uploadedAt: new Date().toISOString(),
           size: file.size,
@@ -2020,6 +2042,85 @@
     });
   }
 
+  // ---------- delete uploaded file (with optional cascade to imported entries) ----------
+  function handleDeleteUpload(uploadId){
+    const upload = uploads.find(function(u){ return u.id === uploadId; });
+    if(!upload) return;
+    const relatedCount = entries.filter(function(e){ return e.uploadId === uploadId; }).length;
+    const confirmDelete = confirm('Delete the uploaded file record for "' + upload.name + '"? This cannot be undone.');
+    if(!confirmDelete) return;
+    let alsoDeleteEntries = false;
+    if(relatedCount > 0){
+      alsoDeleteEntries = confirm('This file has ' + relatedCount + ' SOR entr' + (relatedCount === 1 ? 'y' : 'ies') + ' imported from it.\n\nClick OK to also DELETE those entries.\nClick Cancel to keep the entries and only remove the file record.');
+    }
+    uploads = uploads.filter(function(u){ return u.id !== uploadId; });
+    persistUploads();
+    if(alsoDeleteEntries){
+      entries = entries.filter(function(e){ return e.uploadId !== uploadId; });
+      persist();
+      populatePeriodSelect();
+      renderLog();
+      renderDashboard();
+    }
+    renderUploads();
+  }
+  (function wireUploadDeleteButtons(){
+    const body = document.getElementById('uploadsBody');
+    if(!body) return;
+    body.addEventListener('click', function(e){
+      const btn = e.target.closest('.delete-upload-btn');
+      if(!btn) return;
+      handleDeleteUpload(btn.getAttribute('data-upload-id'));
+    });
+  })();
+
+  // ---------- calendar & clock widget ----------
+  let calViewDate = new Date();
+  function updateLiveClock(){
+    const el = document.getElementById('liveClock');
+    const dateEl = document.getElementById('liveDateLabel');
+    if(!el || !dateEl) return;
+    const now = new Date();
+    el.textContent = now.toLocaleTimeString(undefined, { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    dateEl.textContent = now.toLocaleDateString(undefined, { weekday:'long', year:'numeric', month:'long', day:'numeric' });
+  }
+  function renderCalendarWidget(){
+    const grid = document.getElementById('calGrid');
+    const label = document.getElementById('calMonthLabel');
+    if(!grid || !label) return;
+    const year = calViewDate.getFullYear();
+    const month = calViewDate.getMonth();
+    label.textContent = calViewDate.toLocaleDateString(undefined, { month:'long', year:'numeric' });
+    const firstDay = new Date(year, month, 1);
+    const startOffset = (firstDay.getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const today = new Date();
+    const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+    const dowLabels = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    let html = dowLabels.map(function(d){ return '<div style="font-weight:700;color:var(--muted);">' + d + '</div>'; }).join('');
+    for(let i = 0; i < startOffset; i++){ html += '<div></div>'; }
+    for(let d = 1; d <= daysInMonth; d++){
+      const isToday = isCurrentMonth && d === today.getDate();
+      html += '<div style="padding:4px 0;border-radius:6px;' + (isToday ? 'background:var(--navy);color:#fff;font-weight:700;' : '') + '">' + d + '</div>';
+    }
+    grid.innerHTML = html;
+  }
+  function initCalendarClock(){
+    updateLiveClock();
+    setInterval(updateLiveClock, 1000);
+    renderCalendarWidget();
+    const prevBtn = document.getElementById('calPrevBtn');
+    const nextBtn = document.getElementById('calNextBtn');
+    if(prevBtn) prevBtn.addEventListener('click', function(){
+      calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() - 1, 1);
+      renderCalendarWidget();
+    });
+    if(nextBtn) nextBtn.addEventListener('click', function(){
+      calViewDate = new Date(calViewDate.getFullYear(), calViewDate.getMonth() + 1, 1);
+      renderCalendarWidget();
+    });
+  }
+
   // ---------- init ----------
   document.getElementById('todayLabel').textContent = new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'});
   load();
@@ -2029,6 +2130,7 @@
   renderLog();
   renderDashboard();
   renderUploads();
+  initCalendarClock();
 })();
 </script>
 
