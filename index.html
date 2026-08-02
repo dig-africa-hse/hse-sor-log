@@ -510,6 +510,7 @@
     <button class="tab-btn" data-tab="entry">➕ New Entry</button>
     <button class="tab-btn" data-tab="log">📋 SOR Log</button>
     <button class="tab-btn" data-tab="analysis">📈 Analysis</button>
+    <button class="tab-btn" data-tab="trash">🗑️ Recycle Bin</button>
   </nav>
 <main>
 
@@ -820,6 +821,17 @@
       </table>
     </div>
   </div>
+<section id="tab-trash" class="hidden">
+  <div class="card">
+    <h2>Recycle Bin</h2>
+    <p style="margin-top:-6px;color:var(--muted);font-size:0.88rem;">Deleted uploaded files (and any SOR entries removed together with them) are kept here for 30 days before being permanently erased automatically. You can restore an item, or delete it forever early.</p>
+    <table>
+      <thead>
+        <tr><th>Deleted</th><th>File Name</th><th>Entries Included</th><th>Auto-Deletes On</th><th></th></tr>
+      </thead>
+      <tbody id="trashBody"></tbody>
+    </table>
+  </div>
 </section>
 
 </main>
@@ -844,8 +856,11 @@
 (function(){
   const STORAGE_KEY = 'sor_entries_v1';
   const UPLOADS_KEY = 'sor_uploads_v1';
+  const TRASH_KEY = 'sor_trash_v1';
+  const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
   let entries = [];
   let uploads = [];
+  let trash = [];
   let editId = null;
   let typeChartInst=null, catChartInst=null, trendChartInst=null, correctedChartInst=null, topCatChartInst=null;
   const widgetPeriod = { type:'all', category:'all', observers:'all' };
@@ -1003,9 +1018,11 @@
     document.getElementById('tab-entry').classList.toggle('hidden', name !== 'entry');
     document.getElementById('tab-log').classList.toggle('hidden', name !== 'log');
     document.getElementById('tab-analysis').classList.toggle('hidden', name !== 'analysis');
+    document.getElementById('tab-trash').classList.toggle('hidden', name !== 'trash');
     if(name === 'log') renderLog();
     if(name === 'dashboard') renderDashboard();
     if(name === 'analysis') renderAnalysis();
+    if(name === 'trash') renderTrash();
   }
   document.querySelectorAll('.tab-btn').forEach(btn=>{
     btn.addEventListener('click', ()=> showTab(btn.dataset.tab));
@@ -2043,18 +2060,32 @@
   }
 
   // ---------- delete uploaded file (with optional cascade to imported entries) ----------
+  function loadTrash(){
+    try{ trash = JSON.parse(localStorage.getItem(TRASH_KEY)) || []; }catch(e){ trash = []; }
+  }
+  function persistTrash(){
+    localStorage.setItem(TRASH_KEY, JSON.stringify(trash));
+  }
+  function purgeOldTrash(){
+    const now = Date.now();
+    const before = trash.length;
+    trash = trash.filter(function(t){ return (now - new Date(t.deletedAt).getTime()) < TRASH_RETENTION_MS; });
+    if(trash.length !== before) persistTrash();
+  }
   function handleDeleteUpload(uploadId){
     const upload = uploads.find(function(u){ return u.id === uploadId; });
     if(!upload) return;
-    const relatedCount = entries.filter(function(e){ return e.uploadId === uploadId; }).length;
-    const confirmDelete = confirm('Delete the uploaded file record for "' + upload.name + '"? This cannot be undone.');
+    const relatedEntries = entries.filter(function(e){ return e.uploadId === uploadId; });
+    const relatedCount = relatedEntries.length;
+    const confirmDelete = confirm('Move the uploaded file record for "' + upload.name + '" to the Recycle Bin? You can restore it (or delete it forever) within the next 30 days.');
     if(!confirmDelete) return;
     let alsoDeleteEntries = false;
     if(relatedCount > 0){
-      alsoDeleteEntries = confirm('This file has ' + relatedCount + ' SOR entr' + (relatedCount === 1 ? 'y' : 'ies') + ' imported from it.\n\nClick OK to also DELETE those entries.\nClick Cancel to keep the entries and only remove the file record.');
+      alsoDeleteEntries = confirm('This file has ' + relatedCount + ' SOR entr' + (relatedCount === 1 ? 'y' : 'ies') + ' imported from it.\n\nClick OK to also move those entries to the Recycle Bin along with the file.\nClick Cancel to keep the entries and only move the file record.');
     }
     uploads = uploads.filter(function(u){ return u.id !== uploadId; });
     persistUploads();
+    const trashedEntries = alsoDeleteEntries ? relatedEntries.slice() : [];
     if(alsoDeleteEntries){
       entries = entries.filter(function(e){ return e.uploadId !== uploadId; });
       persist();
@@ -2062,8 +2093,73 @@
       renderLog();
       renderDashboard();
     }
+    trash.push({
+      id: uploadId,
+      upload: upload,
+      entries: trashedEntries,
+      deletedAt: new Date().toISOString()
+    });
+    persistTrash();
     renderUploads();
   }
+  function restoreTrashItem(trashId){
+    const idx = trash.findIndex(function(t){ return t.id === trashId; });
+    if(idx === -1) return;
+    const item = trash[idx];
+    uploads.push(item.upload);
+    persistUploads();
+    if(item.entries && item.entries.length){
+      entries = entries.concat(item.entries);
+      persist();
+      populatePeriodSelect();
+      renderLog();
+      renderDashboard();
+    }
+    trash.splice(idx, 1);
+    persistTrash();
+    renderUploads();
+    renderTrash();
+  }
+  function deleteForeverTrashItem(trashId){
+    const item = trash.find(function(t){ return t.id === trashId; });
+    if(!item) return;
+    const entryNote = (item.entries && item.entries.length) ? (' and its ' + item.entries.length + ' SOR entr' + (item.entries.length === 1 ? 'y' : 'ies')) : '';
+    const ok = confirm('Permanently delete "' + item.upload.name + '"' + entryNote + '? This cannot be undone.');
+    if(!ok) return;
+    trash = trash.filter(function(t){ return t.id !== trashId; });
+    persistTrash();
+    renderTrash();
+  }
+  function renderTrash(){
+    purgeOldTrash();
+    const body = document.getElementById('trashBody');
+    if(!body) return;
+    const list = trash.slice().sort(function(a,b){ return new Date(b.deletedAt) - new Date(a.deletedAt); });
+    if(!list.length){
+      body.innerHTML = '<tr><td colspan="5" style="color:var(--muted);text-align:center;">Recycle Bin is empty.</td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(function(item){
+      const deletedDt = new Date(item.deletedAt);
+      const deletedStr = deletedDt.toLocaleString(undefined, { year:'numeric', month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+      const purgeDt = new Date(deletedDt.getTime() + TRASH_RETENTION_MS);
+      const purgeStr = purgeDt.toLocaleDateString(undefined, { year:'numeric', month:'short', day:'numeric' });
+      const entryCount = item.entries ? item.entries.length : 0;
+      const restoreBtn = '<button type="button" class="btn btn-secondary restore-trash-btn" data-trash-id="' + escapeHtml(item.id) + '" style="padding:6px 12px;font-size:0.82rem;">Restore</button>';
+      const forgetBtn = '<button type="button" class="btn btn-secondary delete-forever-btn" data-trash-id="' + escapeHtml(item.id) + '" style="margin-left:6px;padding:6px 12px;font-size:0.82rem;color:var(--accent);">Delete Forever</button>';
+      return '<tr><td>' + deletedStr + '</td><td>' + escapeHtml(item.upload.name) + '</td><td>' + entryCount + '</td><td>' + purgeStr + '</td><td>' + restoreBtn + forgetBtn + '</td></tr>';
+    }).join('');
+  }
+  (function wireTrashButtons(){
+    const body = document.getElementById('trashBody');
+    if(!body) return;
+    body.addEventListener('click', function(e){
+      const restoreBtn = e.target.closest('.restore-trash-btn');
+      if(restoreBtn){ restoreTrashItem(restoreBtn.getAttribute('data-trash-id')); return; }
+      const forgetBtn = e.target.closest('.delete-forever-btn');
+      if(forgetBtn){ deleteForeverTrashItem(forgetBtn.getAttribute('data-trash-id')); return; }
+    });
+  })();
   (function wireUploadDeleteButtons(){
     const body = document.getElementById('uploadsBody');
     if(!body) return;
@@ -2125,6 +2221,8 @@
   document.getElementById('todayLabel').textContent = new Date().toLocaleDateString(undefined,{weekday:'long', year:'numeric', month:'long', day:'numeric'});
   load();
   loadUploads();
+  loadTrash();
+  purgeOldTrash();
   resetForm();
   populatePeriodSelect();
   renderLog();
